@@ -41,11 +41,11 @@ motion_planning.py includes:
     - Prune path w/ Bresenham or Colinearity 
     - Send waypoints 
 
-planning_utils.py includes:
-- create_grid(data, drone_altitiude, safety_distance) method - given the map data, creates a 2D config space w/ obstables 
-- class Action that has W, E, N, S actions
+planning_utils.py includes similar methods to the exercises in the Planning lessons in the course:
+- create_grid(data, drone_altitiude, safety_distance) method - given the map data, creates a 2D config space w/ obstacles 
+- class Action that has West, East, North, South actions
 - valid_actions(grid, current_node) returns the actions that are possible on that node from Action class
-- a_star(grid, h, start, goal) - implements a* algorithm with a given map, heuristic, and start/goal 
+- a_star(grid, h, start, goal) - implements a* algorithm with a given grid map, heuristic, and start/goal, uses actions from Action class to get from one grid space to another
 - heurstic function that is just the euclidean distance b/w nodes 
 
 
