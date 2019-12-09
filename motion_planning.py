@@ -4,8 +4,9 @@ import msgpack
 from enum import Enum, auto
 
 import numpy as np
+import numpy.linalg as LA
 
-from planning_utils import a_star, heuristic, create_grid, prune_path
+from planning_utils import Map, heuristic, a_star
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
@@ -144,8 +145,12 @@ class MotionPlanning(Drone):
         # Read in obstacle map
         data = np.loadtxt('colliders.csv', delimiter=',', dtype='Float64', skiprows=2)
         
-        # Define a grid for a particular altitude and safety margin around obstacles
-        grid, north_offset, east_offset = create_grid(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
+
+        # Define a graph for a obstacles
+        roadmap = Map(data, 20)
+        print("Roadmap done")
+        g, north_offset, east_offset  = roadmap.create_graph(10)
+        
         print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
         
         # Define starting point on the grid to current position
@@ -162,17 +167,18 @@ class MotionPlanning(Drone):
         grid_goal = self.global_to_grid(goal_lat, goal_long, (north_offset, east_offset))
         #grid_goal = (grid_start[0]+20, grid_start[1]+20)
 
-
+        for pt in roadmap.pts:
+            if roadmap.can_connect(pt, grid_start):
+                    g.add_edge(pt, grid_start, weight = LA.norm(np.array(pt) - np.array(grid_start)))
+            if roadmap.can_connect(pt, grid_goal):
+                    g.add_edge(pt, grid_goal, weight = LA.norm(np.array(pt) - np.array(grid_goal)))
+        
         # Run A* to find a path from start to goal
         print('Local Start and Goal: ', grid_start, grid_goal)
-        path, _ = a_star(grid, heuristic, grid_start, grid_goal)
-        # prune path to minimize number of waypoints
-        print(path)
-        path = prune_path(path)
-        print(path)
+        path, _ = a_star(g, heuristic, grid_start, grid_goal)
 
         # Convert path to waypoints
-        waypoints = [[p[0] + north_offset, p[1] + east_offset, TARGET_ALTITUDE, 0] for p in path]
+        waypoints = [[p[0] + north_offset, p[1] + east_offset, -p[2], 0] for p in path]
         # Set self.waypoints
         self.waypoints = waypoints
         # TODO: send waypoints to sim (this is just for visualization of waypoints)
