@@ -6,12 +6,12 @@ from enum import Enum, auto
 import numpy as np
 import numpy.linalg as LA
 
-from planning_utils import Map, heuristic, a_star
+from planning_utils import create_grid_and_edges, crosses, heuristic, a_star
 from udacidrone import Drone
 from udacidrone.connection import MavlinkConnection
 from udacidrone.messaging import MsgID
 from udacidrone.frame_utils import global_to_local
-
+import networkx as nx
 
 class States(Enum):
     MANUAL = auto()
@@ -80,7 +80,8 @@ class MotionPlanning(Drone):
 
     def takeoff_transition(self):
         self.flight_state = States.TAKEOFF
-        print("takeoff transition")
+        print('takeoff transition to ({0}, {1}, {2})'.format(self.local_position[0], self.local_position[1], self.target_position[2]))
+        print('Target position ({0}, {1}, {2})'.format(self.target_position[0], self.target_position[1], self.target_position[2]))
         self.takeoff(self.target_position[2])
 
     def waypoint_transition(self):
@@ -144,12 +145,8 @@ class MotionPlanning(Drone):
                                                                          self.local_position))
         # Read in obstacle map
         data = np.loadtxt('colliders.csv', delimiter=',', dtype='Float64', skiprows=2)
-        
 
-        # Define a graph for a obstacles
-        roadmap = Map(data, 20)
-        print("Roadmap done")
-        g, north_offset, east_offset  = roadmap.create_graph(10)
+        grid, north_offset, east_offset, edges  = create_grid_and_edges(data, TARGET_ALTITUDE, SAFETY_DISTANCE)
         
         print("North offset = {0}, east offset = {1}".format(north_offset, east_offset))
         
@@ -159,26 +156,47 @@ class MotionPlanning(Drone):
         # Set goal using latitude / longitude position and convert to grid
         # goal latitude and longitude can be changed for testing
         # test case 1
-        goal_lat = 37.793763
-        goal_long = -122.396823
+        goal_lat = 37.793793
+        goal_long = -122.396803
         # test case 2
         #goal_lat = 37.797071
         #goal_long = -122.401214
         grid_goal = self.global_to_grid(goal_lat, goal_long, (north_offset, east_offset))
+        print(grid_goal)
         #grid_goal = (grid_start[0]+20, grid_start[1]+20)
 
-        for pt in roadmap.pts:
-            if roadmap.can_connect(pt, grid_start):
-                    g.add_edge(pt, grid_start, weight = LA.norm(np.array(pt) - np.array(grid_start)))
-            if roadmap.can_connect(pt, grid_goal):
-                    g.add_edge(pt, grid_goal, weight = LA.norm(np.array(pt) - np.array(grid_goal)))
+
+        g = nx.Graph()
+        for e in edges:
+            p1 = e[0]
+            p2 = e[1]
+            
+            g.add_edge(p1, p2)
+
+            if crosses(grid, np.array(grid_start), np.array(p1)) == False:
+                g.add_edge(p1, grid_start)
+            if crosses(grid, np.array(grid_start), np.array(p2)) == False:
+                g.add_edge(p2, grid_start)
+
+            if crosses(grid, np.array(p1), np.array(grid_goal)) == False:
+                g.add_edge(p1, grid_goal) 
+            if crosses(grid, np.array(p2), np.array(grid_goal)) == False:
+                g.add_edge(p2, grid_goal)
+
         
         # Run A* to find a path from start to goal
         print('Local Start and Goal: ', grid_start, grid_goal)
         path, _ = a_star(g, heuristic, grid_start, grid_goal)
 
+        for p in path:
+            print(p)
+
         # Convert path to waypoints
-        waypoints = [[p[0] + north_offset, p[1] + east_offset, -p[2], 0] for p in path]
+        waypoints = [[int(p[0] + north_offset), int(p[1] + east_offset), TARGET_ALTITUDE, 0] for p in path]
+
+        for wp in waypoints:
+            print(wp)
+
         # Set self.waypoints
         self.waypoints = waypoints
         # TODO: send waypoints to sim (this is just for visualization of waypoints)

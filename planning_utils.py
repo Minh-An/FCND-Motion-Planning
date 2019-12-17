@@ -1,142 +1,93 @@
-import sys
-import pkg_resources
-
-# pkg_resources.require("networkx==2.1")
-import networkx as nx
+from enum import Enum
+from queue import PriorityQueue
+from bresenham import bresenham
+from scipy.spatial import Voronoi, voronoi_plot_2d
 import numpy as np
 import numpy.linalg as LA
-from sklearn.neighbors import KDTree
-from shapely.geometry import Polygon, Point
-from shapely.geometry import Polygon, Point, LineString
-from queue import PriorityQueue
-import matplotlib.pyplot as plt
 
-class Poly:
+def create_grid_and_edges(data, drone_altitude, safety_distance):
+    """
+    Returns a grid representation of a 2D configuration space
+    along with Voronoi graph edges given obstacle data and the
+    drone's altitude.
+    """
 
-    def __init__(self, coords, height):
-        self._polygon = Polygon(coords)
-        self._height = height
+    north_min = np.floor(np.min(data[:, 0] - data[:, 3]))
+    north_max = np.ceil(np.max(data[:, 0] + data[:, 3]))
 
-    @property
-    def height(self):
-        return self._height
+    east_min = np.floor(np.min(data[:, 1] - data[:, 4]))
+    east_max = np.ceil(np.max(data[:, 1] + data[:, 4]))
 
-    @property
-    def coords(self):
-        return list(self._polygon.exterior.coords)[:-1]
+    # given the min, max coordinates we can compute size of the grid.
+    north_size = int(np.ceil((north_max - north_min)))
+    east_size = int(np.ceil((east_max - east_min)))
+
+    # Initialize an empty grid
+    grid = np.zeros((north_size, east_size))
     
-    @property
-    def area(self):
-        return self._polygon.area
+    # Center offset for grid
+    north_min_center = np.min(data[:, 0])
+    east_min_center = np.min(data[:, 1])
+    
+    # Define a list to hold Voronoi points
+    points = []
+    
+    # Populate the grid with obstacles
+    for i in range(data.shape[0]):
+        north, east, alt, d_north, d_east, d_alt = data[i, :]
 
-    @property
-    def center(self):
-        return (self._polygon.centroid.x, self._polygon.centroid.y)
-
-    def contains(self, point):
-        point = Point(point)
-        return self._polygon.contains(point)
-
-    def crosses(self, other):
-        return self._polygon.crosses(other)
-
-class Map:
-    def __init__(self, data, zmax):
-        self._data = data
-        self._polygons = self.extract_polygons()
-        self._xmin = np.min(data[:, 0] - data[:, 3])
-        self._xmax = np.max(data[:, 0] + data[:, 3])
-
-        self._ymin = np.min(data[:, 1] - data[:, 4])
-        self._ymax = np.max(data[:, 1] + data[:, 4])
-
-        self._zmin = 0
-        # limit z-axis
-        self._zmax = zmax
-        # Record maximum polygon dimension in the xy plane
-        # multiply by 2 since given sizes are half widths
-        # This is still rather clunky but will allow us to 
-        # cut down the number of polygons we compare with by a lot.
-        self._max_poly_xy = 2 * np.max((data[:, 3], data[:, 4]))
-        centers = np.array([p.center for p in self._polygons])
-        self._tree = KDTree(centers, metric='euclidean')
-        self._pts = self.sample(300)
-
-    def extract_polygons(self):
-        polygons = []
-
-        for i in range(self._data.shape[0]):
-            north, east, alt, d_north, d_east, d_alt = self._data[i, :]
+        if alt + d_alt + safety_distance > drone_altitude:
+            obstacle = [
+                int(north - d_north - safety_distance - north_min_center),
+                int(north + d_north + safety_distance - north_min_center),
+                int(east - d_east - safety_distance - east_min_center),
+                int(east + d_east + safety_distance - east_min_center),
+            ]
+            grid[obstacle[0]:obstacle[1]+1, obstacle[2]:obstacle[3]+1] = 1
             
-            obstacle = [north - d_north, north + d_north, east - d_east, east + d_east]
-            corners = [(obstacle[0], obstacle[2]), (obstacle[0], obstacle[3]), (obstacle[1], obstacle[3]), (obstacle[1], obstacle[2])]
-            
-            # TODO: Compute the height of the polygon
-            height = alt + d_alt
+            # add center of obstacles to points list
+            points.append([north - north_min, east - east_min])
 
-            p = Poly(corners, height)
-            polygons.append(p)
+    # create a voronoi graph based on location of obstacle centers
+    graph = Voronoi(points)
+    
 
-        return polygons
+    edges = []
+    for v in graph.ridge_vertices:
+        v1 = graph.vertices[v[0]]
+        v2 = graph.vertices[v[1]]
+        cross = crosses(grid, v1, v2)
+        if not cross:
+            edge = (tuple(v1), tuple(v2))
+            edges.append(edge)
+    
+    return grid, int(north_min), int(east_min), edges
 
-    def sample(self, num_samples):
-        """Implemented with a k-d tree for efficiency."""
-
-        xvals = np.random.uniform(self._xmin, self._xmax, num_samples)
-        yvals = np.random.uniform(self._ymin, self._ymax, num_samples)
-        zvals = np.random.uniform(self._zmin, self._zmax, num_samples)
-        samples = list(zip(xvals, yvals, zvals))
-
-        pts = []
-        for s in samples:
-            in_collision = False
-            idxs = list(self._tree.query_radius(np.array([s[0], s[1]]).reshape(1, -1), r=self._max_poly_xy)[0])
-            for idx in idxs: 
-                p = self._polygons[int(idx)]
-                if p.contains(s) and p.height >= s[2]:
-                    in_collision = True
-            if not in_collision:
-                pts.append(s)
-                
-        return pts
-
-    def can_connect(self, p1, p2):
-        ls = LineString([p1, p2])
-        for p in self._polygons:
-            if p.crosses(ls) and min(p1[2], p2[2]) < p.height:
-                return False
+def crosses(grid, p1, p2):
+    if np.amin(p1) < 0 or np.amin(p2)< 0 or p1[0] > grid.shape[0] or p1[1] > grid.shape[1] or p2[0] > grid.shape[0] or p2[1] > grid.shape[1]:
         return True
+    
+    cells = list(bresenham(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1])))
+    for cell in cells:
+        #print(cell, p1, p2)
+        if grid[cell[0]][cell[1]] == 1:
+            return True
 
-    ## points is list of shapely.geometry.Point(s)
-    # k is int param
-    def create_graph(self, k):
-        g = nx.Graph()
-        tree = KDTree(self._pts)
-        print(len(self._pts))
-        for p in self._pts:
-            neighbor_idxs = tree.query([p], k, return_distance=False)[0]
-            for i in neighbor_idxs:
-                if p !=  self._pts[i] and self.can_connect(p, self._pts[i]):
-                    g.add_edge(p, self._pts[i], weight = LA.norm(np.array(p) - np.array(self._pts[i])))
-        return g, self._xmin, self._ymin
+    return False
 
-    @property
-    def pts(self):
-        return self._pts
-
-def heuristic(self, n1, n2):
+def heuristic(n1, n2):
     return np.linalg.norm(np.array(n2)-np.array(n1))
 
-def a_star(self, graph, heuristic, start, goal):
+def a_star(graph, heuristic, start, goal):
     """Modified A* to work with NetworkX graphs."""
 
     queue = PriorityQueue()
     queue.put((0,start))
     visited = set(start)
     branch = {}
-    
+
     found = False
-    
+
     while not queue.empty():
         item = queue.get()
         current_node = item[1]
@@ -151,10 +102,10 @@ def a_star(self, graph, heuristic, start, goal):
             break
         else:
             for neighbor in graph[current_node]:
-                g_cost = current_cost + graph[current_node][neighbor]['weight']
-                f_cost = g_cost + heuristic(neighbor, goal)
-
                 if neighbor not in visited: 
+                    g_cost = current_cost + heuristic(neighbor, current_node)
+                    f_cost = g_cost + heuristic(neighbor, goal)
+
                     visited.add(neighbor)
                     queue.put((f_cost, neighbor))
                     branch[neighbor] = (g_cost, current_node)
